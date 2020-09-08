@@ -8,7 +8,7 @@ module.exports = async function deployFunc (deployer, network) {
   let forwarder = await TrustedForwarder.deployed().then(c => c.address).catch(e => null)
   if (!forwarder) {
     if (netid > 100) {
-      forwarder = (await deployer.deploy(Forwarder)).address
+      forwarder = (await deployer.deploy(TrustedForwarder)).address
     } else {
       // don't automatically install on other networks. should have entires here.
       const forwarders = {

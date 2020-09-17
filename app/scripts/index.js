@@ -8,13 +8,13 @@ import contract from 'truffle-contract'
 
 // Import our contract artifacts and turn them into usable abstractions.
 import metaCoinArtifact from '../../build/contracts/MetaCoin.json'
-import IPaymaster from '../../build/contracts/IPaymaster.json'
 import { networks } from './networks'
-import { resolveConfigurationGSN } from '@opengsn/gsn'
 
-const Gsn = require('@opengsn/gsn')
+import IPaymaster from '../../build/contracts/NaivePaymaster.json'
+const {
+  RelayProvider
+} = require('@opengsn/gsn')
 
-const RelayProvider = Gsn.RelayProvider
 
 // MetaCoin is our usable abstraction, which we'll use through the code below.
 const MetaCoin = contract(metaCoinArtifact)
@@ -22,26 +22,36 @@ const MetaCoin = contract(metaCoinArtifact)
 // The following code is simple to show off interacting with your contracts.
 // As your needs grow you will likely need to change its form and structure.
 // For application bootstrapping, check out window.addEventListener below.
-let accounts
-let account
-let forwarder
-
-var network
+let accounts,
+  account,
+  relayHubAddress,
+  stakeManagerAddress,
+  paymasterAddress,
+  forwarderAddress,
+  network;
 
 const App = {
   start: async function () {
     const self = this
     // This should actually be web3.eth.getChainId but MM compares networkId to chainId apparently
     web3.eth.net.getId(async function (err, networkId) {
-      if (parseInt(networkId) < 1e4 ) { // We're on testnet/
-        network = networks[networkId]
+      if (parseInt(networkId) < 1e4) { // We're on testnet/
+         network = networks[networkId]
         MetaCoin.deployed = () => MetaCoin.at(network.metacoin)
+        relayHubAddress = network.relayHub;
+        paymasterAddress = network.paymaster;
+        stakeManagerAddress = network.stakeManager;
       } else { // We're on ganache
         console.log('Using local ganache')
+        relayHubAddress = require('../../build/gsn/RelayHub.json').address
+        stakeManagerAddress = require('../../build/gsn/StakeManager.json').address
+        paymasterAddress = require('../../build/gsn/Paymaster.json').address
+        forwarderAddress = require('../../build/gsn/Forwarder.json').address
+
         network = {
-          relayHub: require('../../build/gsn/RelayHub.json').address,
-          paymaster: require('../../build/gsn/Paymaster.json').address,
-          forwarder: require('../../build/gsn/Paymaster.json').address
+          relayHub: relayHubAddress,
+          paymaster: paymasterAddress,
+          forwarder: forwarderAddress
         }
       }
       if (!network) {
@@ -55,16 +65,18 @@ const App = {
         console.log('Error getting chainId', err)
         process.exit(-1)
       }
-      const gsnConfig = await resolveConfigurationGSN(window.ethereum, {
-        verbose: true,
+      const gsnConfig = {
+        relayHubAddress,
+        paymasterAddress,
+        stakeManagerAddress,
         methodSuffix: '_v4',
         jsonStringifyRequest: true,
-        chainId: networkId,
-        forwarderAddress: network.forwarder,
-        paymasterAddress: network.paymaster,
-        gasPriceFactorPercent: 70,
-        relayLookupWindowBlocks: 1e5
-      })
+        // TODO: this is actually a reported bug in MetaMask. Should be:
+        // chainId: network.chainId
+        // but chainID == networkId on top ethereum networks. See https://chainid.network/
+        chainId: window.ethereum.networkVersion
+      }
+      console.log(gsnConfig,'gsnConfig');
       var provider = new RelayProvider(web3.currentProvider, gsnConfig)
       web3.setProvider(provider)
 
@@ -111,22 +123,22 @@ const App = {
   refreshBalance: function () {
     const self = this
 
-    function putItem(name,val) {
+    function putItem(name, val) {
       const item = document.getElementById(name)
       item.innerHTML = val
     }
-    function putAddr(name,addr) {
+
+    function putAddr(name, addr) {
       putItem(name, self.addressLink(addr))
     }
 
-    putAddr( 'paymaster', network.paymaster )
-    putAddr( 'hubaddr', network.relayHub )
+    putAddr('paymaster', network.paymaster)
+    putAddr('hubaddr', network.relayHub)
 
-    new web3.eth.Contract( IPaymaster.abi, network.paymaster ).methods
-      .getRelayHubDeposit().call().then(bal=> {
-      putItem( 'paymasterBal', "- eth balance: "+(bal/1e18) )
-    }).catch(console.log)
-
+    new web3.eth.Contract(IPaymaster.abi, network.paymaster).methods
+      .getRelayHubDeposit().call().then(bal => {
+        putItem('paymasterBal', '- eth balance: ' + (bal / 1e18))
+      }).catch(console.log)
 
     let meta
     MetaCoin.deployed().then(function (instance) {
@@ -134,39 +146,46 @@ const App = {
       console.log('Metacoin deployed', instance)
       const address = document.getElementById('address')
       address.innerHTML = self.addressLink(account)
-      putAddr( 'metaaddr', MetaCoin.address)
+      putAddr('metaaddr', MetaCoin.address)
 
-      return meta.balanceOf.call(account, { from: account })
+      return meta.balanceOf.call(account, {
+        from: account
+      })
     }).then(function (value) {
       const balanceElement = document.getElementById('balance')
       balanceElement.innerHTML = value.valueOf()
 
-    //   // TODO: read forwarder from contract.
-    //   return forwarder
-    //   // return meta.getTrustedForwarder.call({ from: account })
-    // }).then(function (forwarderAddress) {
+      //   // TODO: read forwarder from contract.
+      //   return forwarder
+      //   // return meta.getTrustedForwarder.call({ from: account })
+      // }).then(function (forwarderAddress) {
 
       const forwarderAddress = network.forwarder
       const forwarderElement = document.getElementById('forwarderAddress')
       forwarderElement.innerHTML = self.addressLink(forwarderAddress, forwarderAddress)
-
     }).catch(function (e) {
       const fatalmessage = document.getElementById('fatalmessage')
       console.log(e)
-      if ( /mismatch/.test(e)) {
+      if (/mismatch/.test(e)) {
         fatalmessage.innerHTML = "Wrong network. please switch to 'kovan'"
       }
       self.setStatus('Error getting balance; see log.')
     })
   },
 
-  mint : function () {
+  mint: function () {
     const self = this
     MetaCoin.deployed().then(function (instance) {
       console.log('Metacoin deployed', instance)
       self.setStatus('Mint: Initiating transaction... (please wait)')
-      return instance.mint({ from: account })
+      return instance.mint({
+        from: account
+        // ,
+        // paymaster: network.paymaster,
+        // forwarder: network.forwarder
+      })
     }).then(function (res) {
+      console.log(res, 'res')
       self.refreshBalance()
       self.setStatus('Mint transaction complete!<br>\n' + self.txLink(res.tx))
     }).catch(function (err) {
@@ -187,8 +206,9 @@ const App = {
     MetaCoin.deployed().then(function (instance) {
       meta = instance
       console.log('Metacoin deployed', instance)
-      return meta.transfer(receiver, amount,
-        { from: account })
+      return meta.transfer(receiver, amount, {
+        from: account
+      })
     }).then(function (res) {
       self.setStatus('Transaction complete!<br>\n' + self.txLink(res.tx))
       self.refreshBalance()
